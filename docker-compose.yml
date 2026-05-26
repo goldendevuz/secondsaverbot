@@ -1,0 +1,46 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis_cache
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  bot:
+    build: .
+    container_name: aiogram_bot
+    restart: unless-stopped
+    depends_on:
+      - redis
+
+    env_file:
+      - .env
+
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+
+    deploy:
+      replicas: 1
+
+    stop_grace_period: 5s
+
+    tty: true
+    stdin_open: false
+
+    init: true
+
+    ports:
+      - "8080:8080"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  redis_data:
+
