@@ -12,7 +12,7 @@ def build_caption(url: str) -> str:
     """
     Pure function to construct the standard video caption with HTML links.
     """
-    return f"<b><i><a href='https://t.me/free_yt_dl_bot'>via</a> | <a href='{url}'>link</a></i></b>"
+    return f"<b><i><a href='https://t.me/free_yt_dl_bot'>@secondsaverbot</a> | <a href='{url}'>link</a></i></b>"
 
 
 def sanitize_url(url: str) -> str:
