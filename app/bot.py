@@ -47,9 +47,9 @@ async def start_health_server(redis_manager: RedisManager):
     runner = web.AppRunner(app)
     await runner.setup()
 
-    site = web.TCPSite(runner, host="0.0.0.0", port=8080)
+    site = web.TCPSite(runner, host="0.0.0.0", port=2026)
     await site.start()
-    logger.info("🩺 Health API server listening on http://0.0.0.0:8080/health")
+    logger.info("🩺 Health API server listening on http://0.0.0.0:2026/health")
 
     try:
         # Keep running

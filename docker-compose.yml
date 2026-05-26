@@ -32,10 +32,10 @@ services:
     init: true
 
     ports:
-      - "8080:8080"
+      - "2026:2026"
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:2026/health"]
       interval: 30s
       timeout: 5s
       retries: 3
