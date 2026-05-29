@@ -9,6 +9,7 @@ from app.logging_routes import logs_handler
 from app.redis.client import RedisManager
 from app.services.download import DownloadService
 from app.logging_setup import setup_logging
+from app.handlers import main_router
 from app.middlewares import (
     LoggingMiddleware,
     RateLimitMiddleware,
