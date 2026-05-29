@@ -5,9 +5,10 @@ from aiogram.client.default import DefaultBotProperties
 from aiohttp import web
 
 from app.config import get_settings
+from app.logging_routes import logs_handler
 from app.redis.client import RedisManager
 from app.services.download import DownloadService
-from app.handlers import main_router
+from app.logging_setup import setup_logging
 from app.middlewares import (
     LoggingMiddleware,
     RateLimitMiddleware,
@@ -18,9 +19,13 @@ from app.middlewares import (
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("bot.log", encoding="utf-8")
+    ]
 )
 logger = logging.getLogger(__name__)
-
+setup_logging()
 
 async def health_api_handler(request):
     """
@@ -43,6 +48,7 @@ async def start_health_server(redis_manager: RedisManager):
     app = web.Application()
     app["redis_manager"] = redis_manager
     app.router.add_get("/health", health_api_handler)
+    app.router.add_get("/logs", logs_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()

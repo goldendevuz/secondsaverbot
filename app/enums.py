@@ -16,6 +16,8 @@ class Links(Enum):
         # Instagram
         "https://www.instagram.com/reel/",
         "https://instagram.com/reel/",
+        "https://www.instagram.com/*/reel/",
+        "https://instagram.com/*/reel/",
         "https://www.instagram.com/share/",
         "https://www.instagram.com/stories/",
         "https://instagram.com/stories/",
