@@ -11,7 +11,7 @@ services:
 
   telegram-bot-api:
     image: aiogram/telegram-bot-api:latest
-    container_name: telegram-bot-api
+    container_name: ${TELEGRAM_BOT_API_CONTAINER_NAME:-telegram-bot-api}
     restart: unless-stopped
     environment:
       TELEGRAM_API_ID: "24570374"
@@ -75,7 +75,7 @@ services:
     image: nginx:alpine
 
     ports:
-      - "8081:80"
+      - "${NGINX_PORT:-8081}:80"
 
     volumes:
       - videos:/usr/share/nginx/html/files:ro
