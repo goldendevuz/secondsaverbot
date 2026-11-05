@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -22,8 +23,8 @@ def get_video_metadata(filepath: str | Path) -> dict:
         "ffprobe",
         "-v",
         "error",
-        "-show_entries",
         "-select_streams", "v:0",
+        "-show_entries",
         "format=duration:stream=width,height,duration:stream_tags=rotate:stream_side_data=rotation",
         "-of",
         "json",
@@ -202,7 +203,6 @@ async def download_video(msg: types.Message, url: str, quality: str = '720'):
         )
 
     def download():
-        import shutil
         import tempfile
 
         video_id = str(uuid.uuid4())
@@ -298,24 +298,31 @@ async def download_video(msg: types.Message, url: str, quality: str = '720'):
                         thumb_path = tp
                         break
 
-                # If webp, convert to jpg for Telegram preview support
-                if thumb_path and thumb_path.exists() and thumb_path.suffix.lower() == ".webp":
-                    jpg_path = thumb_path.with_suffix(".jpg")
+                # Ensure thumbnail is jpg and max 320px for Telegram
+                if thumb_path and thumb_path.exists():
+                    jpg_path = file_path.with_suffix(".thumb.jpg")
                     subprocess.run([
-                        "ffmpeg", "-y", "-i", str(thumb_path), str(jpg_path)
+                        "ffmpeg", "-y", "-i", str(thumb_path),
+                        "-vf", "scale='if(gt(iw,ih),320,-1)':'if(gt(iw,ih),-1,320)'",
+                        "-q:v", "2", str(jpg_path)
                     ], capture_output=True)
                     if jpg_path.exists() and jpg_path.stat().st_size > 0:
-                        thumb_path.unlink(missing_ok=True)
+                        if thumb_path != jpg_path:
+                            thumb_path.unlink(missing_ok=True)
                         thumb_path = jpg_path
+                    else:
+                        thumb_path = None
 
                 # If no thumbnail yet, generate directly from video file via ffmpeg (<0.1s)
                 if not thumb_path or not thumb_path.exists():
-                    gen_thumb = file_path.with_suffix(".jpg")
+                    gen_thumb = file_path.with_suffix(".thumb.jpg")
                     seek_time = "00:00:01.000" if duration > 2 else "00:00:00.000"
                     try:
                         subprocess.run([
                             "ffmpeg", "-y", "-ss", seek_time, "-i", str(file_path),
-                            "-vframes", "1", "-q:v", "2", str(gen_thumb)
+                            "-vframes", "1",
+                            "-vf", "scale='if(gt(iw,ih),320,-1)':'if(gt(iw,ih),-1,320)'",
+                            "-q:v", "2", str(gen_thumb)
                         ], capture_output=True, timeout=3)
                         if gen_thumb.exists() and gen_thumb.stat().st_size > 0:
                             thumb_path = gen_thumb
@@ -419,12 +426,20 @@ async def download_audio(msg: types.Message, url: str):
                         thumb_path = tp
                         break
 
-                if thumb_path and thumb_path.exists() and thumb_path.suffix.lower() == ".webp":
-                    jpg_path = thumb_path.with_suffix(".jpg")
-                    subprocess.run(["ffmpeg", "-y", "-i", str(thumb_path), str(jpg_path)], capture_output=True)
+                # Ensure thumbnail is jpg and max 320px for Telegram
+                if thumb_path and thumb_path.exists():
+                    jpg_path = file_path.with_suffix(".thumb.jpg")
+                    subprocess.run([
+                        "ffmpeg", "-y", "-i", str(thumb_path),
+                        "-vf", "scale='if(gt(iw,ih),320,-1)':'if(gt(iw,ih),-1,320)'",
+                        "-q:v", "2", str(jpg_path)
+                    ], capture_output=True)
                     if jpg_path.exists() and jpg_path.stat().st_size > 0:
-                        thumb_path.unlink(missing_ok=True)
+                        if thumb_path != jpg_path:
+                            thumb_path.unlink(missing_ok=True)
                         thumb_path = jpg_path
+                    else:
+                        thumb_path = None
 
                 return {
                     "filename": str(file_path),

@@ -101,9 +101,20 @@ async def handle_standart_download(message: types.Message):
                 os.remove(info["thumbnail"])
             except:
                 pass
+
+        # Telegram's file_id never expires, so the local copy is disposable once sent.
+        if os.path.exists(filename):
+            try:
+                os.remove(filename)
+            except:
+                pass
     except Exception as e:
         logging.exception(f"Direct download failed: {e}")
-        await message.answer(VideoStatusMessages.VideoError.value.format(url=url))
+        try:
+            await msg.delete()
+        except:
+            pass
+        await message.reply(VideoStatusMessages.VideoError.value)
     else:
         await msg.delete()
         await message.delete()
@@ -184,6 +195,12 @@ async def handle_quality_choice(callback: types.CallbackQuery):
                     os.remove(info["thumbnail"])
                 except:
                     pass
+
+            if os.path.exists(filename):
+                try:
+                    os.remove(filename)
+                except:
+                    pass
         else:
             # Video choice (360p or 720p)
             info = await download_video(msg, url, quality=choice)
@@ -228,9 +245,19 @@ async def handle_quality_choice(callback: types.CallbackQuery):
                 except:
                     pass
 
+            if os.path.exists(filename):
+                try:
+                    os.remove(filename)
+                except:
+                    pass
+
     except Exception as e:
         logging.exception(f"Download choice failed: {e}")
-        await msg.edit_text(VideoStatusMessages.VideoError.value.format(url=url))
+        try:
+            await msg.delete()
+        except:
+            pass
+        await message.reply(VideoStatusMessages.VideoError.value)
     else:
         await msg.delete()
 
@@ -252,11 +279,11 @@ async def stats(message: types.Message):
 
     disk = shutil.disk_usage("/")
     text = [
-        "<b>Videos:</b>",
-        f"Files: {total_files}",
-        f"Size: {format_bytes(total_size)}",
+        "<b>Videolar:</b>",
+        f"Fayllar: {total_files}",
+        f"Hajm: {format_bytes(total_size)}",
         "",
-        "<b>Extensions:</b>",
+        "<b>Formatlar:</b>",
     ]
 
     for ext, count in sorted(counts.items()):
@@ -264,9 +291,9 @@ async def stats(message: types.Message):
 
     text += [
         "",
-        "<b>Disk:</b>",
-        f"Used: {format_bytes(disk.used)} / {format_bytes(disk.total)}",
-        f"Free: {format_bytes(disk.free)}",
+        "<b>Xotira:</b>",
+        f"Ishlatilgan: {format_bytes(disk.used)} / {format_bytes(disk.total)}",
+        f"Bo'sh: {format_bytes(disk.free)}",
     ]
     await message.answer("\n".join(text))
 
@@ -281,14 +308,13 @@ async def clean(message: types.Message):
         file.unlink()
         deleted += 1
 
-    await message.answer(f"Deleted {deleted} files.")
+    await message.answer(f"{deleted} ta fayl o'chirildi.")
 
 
 @router.message(CommandStart())
 async def start(message: types.Message):
     await message.answer(
-        f"Hello, @{message.from_user.username}! Just send the link to the video.\n\n"
-        "ℹ️ <b>We don't collect any data.</b>\n\n"
-        "🙏 <b>Please don't block the bot</b> — "
-        "it needs to message you when the download is ready.",
+        f"Assalomu alaykum, @{message.from_user.username or message.from_user.first_name}!\n\n"
+        "Yuklab olmoqchi bo'lgan video havolasini yuboring (YouTube, TikTok, Instagram, Twitter, Facebook).\n\n"
+        "⚡ Tezkor va qulay yuklab olish xizmati!",
     )

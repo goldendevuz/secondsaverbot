@@ -55,7 +55,7 @@ async def run_bot() -> None:
                 try:
                     await bot.send_message(
                         chat_id=int(admin_id),
-                        text="✅ Bot successfully started and is ready to download videos!",
+                        text="✅ Bot muvaffaqiyatli ishga tushdi va videolarni yuklashga tayyor!",
                     )
                 except Exception as e:
                     logging.error(f"Failed to send startup message to {admin_id}: {e}")

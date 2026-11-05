@@ -29,20 +29,20 @@ class Links(Enum):
 
 
 class VideoStatusMessages(Enum):
-    VideoProcessing = "<code>{url}</code>\n\n⏳ Your video is being processed..."
-    VideoSuccess = "<code>{url}</code>\n\n✅ Your video has been successfully downloaded. Sending..."
+    VideoProcessing = "<code>{url}</code>\n\n⏳ Videoingiz qayta ishlanmoqda..."
+    VideoSuccess = "<code>{url}</code>\n\n✅ Video muvaffaqiyatli yuklab olindi. Yuborilmoqda..."
     VideoHostRedirect = (
-        "⚠️ The video is too large to send through Telegram.\n"
-        "We're temporarily hosting it on our servers. Please save it locally if you need it later.\n\n"
+        "⚠️ Video hajmi Telegram orqali yuborish uchun juda katta.\n"
+        "Biz uni vaqtincha serverimizda saqlab turamiz. Zarur bo'lsa yuklab oling:\n\n"
         "{download_url}\n\n"
-        "<b><i>downloaded via @free_yt_dl_bot</i></b>"
+        "<b><i>downloaded via @secondsaverbot</i></b>"
     )
-    VideoError = "<code>{url}</code>\n\n⚠️ An error occurred during the download."
-    Caption = "<b><i><a href='https://t.me/free_yt_dl_bot'>via</a> | <a href='{url}'>link</a></i></b>"
+    VideoError = "⚠️ Yuklab olishda xatolik yuz berdi. Havola noto'g'ri bo'lishi yoki video o'chirilgan bo'lishi mumkin."
+    Caption = "<b><i><a href='https://t.me/secondsaverbot'>via</a> | <a href='{url}'>link</a> | <a href='https://l.rhmt.uz/BTZs72'>donate</a></i></b>"
 
 
 class ProgressState(Enum):
-    PREPARING = "Preparing"
-    VIDEO_DOWNLOADING = "Downloading video"
-    AUDIO_DOWNLOADING = "Downloading audio"
-    FINALIZING = "Finalizing"
+    PREPARING = "Tayyorlanmoqda"
+    VIDEO_DOWNLOADING = "Video yuklanmoqda"
+    AUDIO_DOWNLOADING = "Audio yuklanmoqda"
+    FINALIZING = "Yakunlanmoqda"

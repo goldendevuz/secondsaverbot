@@ -36,7 +36,13 @@ async def get_cached_media(key: str) -> Optional[dict]:
     try:
         data = await r.get(f"media:{key}")
         if data:
-            return json.loads(data)
+            parsed = json.loads(data)
+            # Stale entries from a past extraction bug have no real dimensions;
+            # treat them as a miss so the video gets re-downloaded and re-cached correctly.
+            if parsed.get("media_type") != "audio" and not (parsed.get("width") and parsed.get("height")):
+                await r.delete(f"media:{key}")
+                return None
+            return parsed
     except Exception as e:
         logging.warning(f"Redis get error: {e}")
     return None
