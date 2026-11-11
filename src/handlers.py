@@ -198,15 +198,18 @@ async def handle_standart_download(message: types.Message):
             if info.get("is_images") or not info.get("play"):
                 raise Exception("TikTok post has no video")
             # The file is small and fast to fetch, so grab it now for the exact size and a cover frame
-            video = await download_tiktok(info)
+            video = await asyncio.wait_for(download_tiktok(info), timeout=45)
             cover = await extract_frame(video)
             size = video.stat().st_size
             audio = has_audio(video)
         except Exception as e:
-            logging.exception(f"TikTok info failed: {e}")
+            logging.warning(f"TikTok unavailable: {type(e).__name__}: {e}")
             _rm(video, cover)
             await wait.delete()
-            await message.reply(VideoStatusMessages.VideoError.value)
+            await message.reply(
+                "⚠️ TikTok serveriga hozir ulanib bo'lmadi (O'zbekistonda bloklangan bo'lishi mumkin). "
+                "Birozdan keyin qayta urinib ko'ring."
+            )
             return
         await wait.delete()
         token = await put_url(url)
