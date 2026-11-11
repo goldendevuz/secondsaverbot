@@ -7,7 +7,9 @@ import shutil
 from pathlib import Path
 
 from aiogram import F, Router, exceptions, types
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from dotenv import load_dotenv
 
 from enums import Links, ProgressState, VideoStatusMessages
@@ -16,6 +18,31 @@ from utils import (VIDEOS_DIR, download_video, download_audio, format_bytes, for
 
 router = Router()
 load_dotenv()
+
+MAX_CLIP_SECONDS = 15 * 60
+
+
+class TrimStates(StatesGroup):
+    waiting_range = State()
+
+
+def parse_ts(text: str) -> int | None:
+    """'90', '1:30' or '1:02:03' -> seconds."""
+    parts = text.strip().split(":")
+    if not 1 <= len(parts) <= 3 or not all(p.isdigit() for p in parts):
+        return None
+    secs = 0
+    for p in parts:
+        secs = secs * 60 + int(p)
+    return secs
+
+
+def parse_range(text: str) -> tuple[int, int] | None:
+    m = [x for x in text.replace("—", "-").replace("–", "-").replace(" ", "").split("-") if x != ""]
+    if len(m) != 2:
+        return None
+    a, b = parse_ts(m[0]), parse_ts(m[1])
+    return (a, b) if a is not None and b is not None else None
 
 # Local Bot API supports up to 2000 MB (2 GB)
 MAX_TELEGRAM_SIZE = 2000 * 1024 * 1024
@@ -68,6 +95,7 @@ def build_youtube_card(info: dict, vid: str):
         InlineKeyboardButton(text="🎧 MP3", callback_data=f"dl:audio:{vid}"),
         InlineKeyboardButton(text="🖼 Muqova", callback_data=f"dl:cover:{vid}"),
     )
+    kb.row(InlineKeyboardButton(text="✂️ Kesib olish", callback_data=f"dl:trim:{vid}"))
     if info.get("channel_url"):
         kb.row(InlineKeyboardButton(text="📺 Kanalga o'tish", url=info["channel_url"]))
     return "\n".join(lines), kb.as_markup()
@@ -181,11 +209,23 @@ async def handle_standart_download(message: types.Message):
 
 
 @router.callback_query(F.data.startswith("dl:"))
-async def handle_quality_choice(callback: types.CallbackQuery):
+async def handle_quality_choice(callback: types.CallbackQuery, state: FSMContext):
     _, choice, vid = callback.data.split(":", 2)
     url = f"https://www.youtube.com/watch?v={vid}"
     message = callback.message
     await callback.answer()
+
+    if choice == "trim":
+        await state.set_state(TrimStates.waiting_range)
+        await state.update_data(vid=vid)
+        await message.answer(
+            "✂️ <b>Qaysi bo'lakni kesib olay?</b>\n\n"
+            "Boshlanish va tugash vaqtini yuboring:\n"
+            "<code>0:30-1:45</code>\n"
+            "<code>1:02:00-1:05:30</code>\n\n"
+            f"Eng ko'pi bilan {MAX_CLIP_SECONDS // 60} daqiqa. Bekor qilish: /cancel"
+        )
+        return
 
     if choice == "cover":
         try:
@@ -338,6 +378,59 @@ async def handle_quality_choice(callback: types.CallbackQuery):
         await message.reply(VideoStatusMessages.VideoError.value)
     else:
         await msg.delete()
+
+
+@router.message(Command("cancel"), StateFilter(TrimStates.waiting_range))
+async def trim_cancel(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("❌ Bekor qilindi.")
+
+
+@router.message(StateFilter(TrimStates.waiting_range), F.text, ~F.text.startswith("/"))
+async def handle_trim_range(message: types.Message, state: FSMContext):
+    rng = parse_range(message.text)
+    if not rng:
+        await message.reply("⚠️ Format noto'g'ri. Misol: <code>0:30-1:45</code>")
+        return
+    start, end = rng
+    if end <= start:
+        await message.reply("⚠️ Tugash vaqti boshlanishdan keyin bo'lishi kerak.")
+        return
+    if end - start > MAX_CLIP_SECONDS:
+        await message.reply(f"⚠️ Bo'lak {MAX_CLIP_SECONDS // 60} daqiqadan oshmasligi kerak.")
+        return
+
+    vid = (await state.get_data()).get("vid")
+    await state.clear()
+    url = f"https://www.youtube.com/watch?v={vid}"
+    msg = await message.answer(format_message(ProgressState.PREPARING))
+    info = None
+    try:
+        info = await download_video(msg, url, quality="720", clip=(start, end))
+        await message.answer_video(
+            video=types.FSInputFile(info["filename"], chunk_size=4 * 1024 * 1024),
+            caption=f"✂️ <b>{format_time(start)} – {format_time(end)}</b>\n"
+                    + VideoStatusMessages.Caption.value.format(url=f"{url}&t={start}"),
+            width=info.get("width", 0),
+            height=info.get("height", 0),
+            duration=info.get("duration", 0),
+            thumbnail=types.FSInputFile(info["thumbnail"]) if info.get("thumbnail") and os.path.exists(info["thumbnail"]) else None,
+        )
+    except Exception as e:
+        logging.exception(f"Trim failed: {e}")
+        await message.reply(VideoStatusMessages.VideoError.value)
+    finally:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        if info:
+            for key in ("filename", "thumbnail"):
+                if info.get(key) and os.path.exists(info[key]):
+                    try:
+                        os.remove(info[key])
+                    except Exception:
+                        pass
 
 
 @router.message(Command("stats"))

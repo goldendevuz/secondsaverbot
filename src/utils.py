@@ -161,7 +161,7 @@ async def download_tiktok_video(msg: types.Message, url: str):
     }
 
 
-async def download_video(msg: types.Message, url: str, quality: str = '720'):
+async def download_video(msg: types.Message, url: str, quality: str = '720', clip: tuple[int, int] | None = None):
     if "tiktok.com" in url.lower():
         return await download_tiktok_video(msg, url)
 
@@ -237,6 +237,11 @@ async def download_video(msg: types.Message, url: str, quality: str = '720'):
             "progress_hooks": [progress_hook],
             "postprocessors": [],
         }
+
+        if clip:
+            from yt_dlp.utils import download_range_func
+            options["download_ranges"] = download_range_func(None, [clip])
+            options["force_keyframes_at_cuts"] = True
 
         # Copy cookies to a writable temp file if valid Netscape format
         tmp_cookies = None
