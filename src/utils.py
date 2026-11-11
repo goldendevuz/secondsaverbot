@@ -133,38 +133,84 @@ def format_message(
     return "\n".join(lines)
 
 
-async def download_tiktok_video(msg: types.Message, url: str):
+async def fetch_tiktok_info(url: str) -> dict:
+    """Metadata and direct links for a TikTok post via tikwm."""
     async with aiohttp.ClientSession() as session:
         async with session.get(
-            f"https://www.tikwm.com/api/?url={url}",
+            "https://www.tikwm.com/api/",
+            params={"url": url, "hd": 1},
             headers={"User-Agent": "Mozilla/5.0"},
+            timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
-            data = await resp.json()
+            data = await resp.json(content_type=None)
 
-    if data.get("code") != 0 or "data" not in data:
-        raise Exception("Failed to fetch TikTok data")
+    if data.get("code") != 0 or not data.get("data"):
+        raise Exception(f"TikTok API error: {data.get('msg')}")
 
-    video_url = data["data"]["play"]
-    duration = int(data["data"].get("duration", 0))
+    d = data["data"]
+    author = d.get("author") or {}
+    hd_size = d.get("hd_size") or 0
+    return {
+        "title": (d.get("title") or "TikTok").strip(),
+        "author": author.get("nickname") or author.get("unique_id") or "",
+        "author_url": f"https://www.tiktok.com/@{author['unique_id']}" if author.get("unique_id") else None,
+        "duration": int(d.get("duration") or 0),
+        "views": d.get("play_count"),
+        "cover": d.get("origin_cover") or d.get("cover"),
+        "play": d.get("play"),
+        "size": d.get("size") or 0,
+        "hdplay": d.get("hdplay") if d.get("hdplay") and hd_size else None,
+        "hd_size": hd_size,
+        "music": d.get("music"),
+        "is_images": bool(d.get("images")),
+    }
 
+
+async def download_direct(msg: types.Message, direct_url: str, suffix: str) -> Path:
+    """Stream a direct media link into VIDEOS_DIR, updating the progress card."""
+    dest = VIDEOS_DIR / f"{uuid.uuid4()}{suffix}"
+    loop = asyncio.get_running_loop()
+    last = 0.0
+    done = 0
+    started = loop.time()
+    # TikTok CDN is blocked from Uzbekistan: go through the same WARP proxy yt-dlp uses
+    proxy_url = os.getenv("PROXY_URL") or os.getenv("WARP_PROXY", "socks5://warp:9091")
+    connector = None
+    if proxy_url:
+        from aiohttp_socks import ProxyConnector
+        connector = ProxyConnector.from_url(proxy_url, rdns=True)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        async with session.get(
+            direct_url,
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"},
+            timeout=aiohttp.ClientTimeout(total=300),
+        ) as resp:
+            resp.raise_for_status()
+            total = resp.content_length or 0
+            with open(dest, "wb") as f:
+                async for chunk in resp.content.iter_chunked(256 * 1024):
+                    f.write(chunk)
+                    done += len(chunk)
+                    now = loop.time()
+                    if total and now - last >= 1.5:
+                        last = now
+                        speed = done / max(now - started, 0.1)
+                        eta = (total - done) / speed if speed else None
+                        try:
+                            await msg.edit_text(format_message(
+                                ProgressState.AUDIO_DOWNLOADING if suffix == ".mp3" else ProgressState.VIDEO_DOWNLOADING,
+                                done / total * 100, speed, eta,
+                            ))
+                        except exceptions.TelegramBadRequest:
+                            pass
     try:
         await msg.edit_text(format_message(ProgressState.FINALIZING))
     except exceptions.TelegramBadRequest:
         pass
-
-    return {
-        "filename": video_url,
-        "width": 0,
-        "height": 0,
-        "duration": duration,
-        "thumbnail": None
-    }
+    return dest
 
 
 async def download_video(msg: types.Message, url: str, quality: str = '720', clip: tuple[int, int] | None = None):
-    if "tiktok.com" in url.lower():
-        return await download_tiktok_video(msg, url)
-
     loop = asyncio.get_running_loop()
     last_update = [0.0]
     progress = [0.0]

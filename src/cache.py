@@ -93,3 +93,37 @@ async def get_cached_video(url: str):
 
 async def cache_video(url: str, **kwargs):
     await cache_media(key=url, media_type="video", **kwargs)
+
+
+# ---- Short tokens for long URLs (Telegram callback_data is limited to 64 bytes)
+import hashlib
+from collections import OrderedDict
+
+_url_tokens: "OrderedDict[str, str]" = OrderedDict()
+
+
+async def put_url(url: str) -> str:
+    token = hashlib.sha1(url.encode()).hexdigest()[:12]
+    _url_tokens[token] = url
+    _url_tokens.move_to_end(token)
+    while len(_url_tokens) > 2000:
+        _url_tokens.popitem(last=False)
+    r = get_redis()
+    if r:
+        try:
+            await r.setex(f"url:{token}", 7 * 24 * 3600, url)
+        except Exception as e:
+            logging.warning(f"Redis set error: {e}")
+    return token
+
+
+async def get_url(token: str) -> Optional[str]:
+    if token in _url_tokens:
+        return _url_tokens[token]
+    r = get_redis()
+    if r:
+        try:
+            return await r.get(f"url:{token}")
+        except Exception as e:
+            logging.warning(f"Redis get error: {e}")
+    return None

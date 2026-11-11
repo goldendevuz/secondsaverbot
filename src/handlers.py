@@ -1,6 +1,7 @@
+import asyncio
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton
-from cache import get_cached_media, cache_media, get_cached_video, cache_video
+from cache import get_cached_media, cache_media, get_cached_video, cache_video, put_url, get_url
 import logging
 import os
 import shutil
@@ -14,7 +15,8 @@ from dotenv import load_dotenv
 
 from enums import Links, ProgressState, VideoStatusMessages
 from utils import (VIDEOS_DIR, download_video, download_audio, format_bytes, format_message,
-                   format_time, extract_youtube_id, fetch_youtube_info)
+                   format_time, extract_youtube_id, fetch_youtube_info,
+                   fetch_tiktok_info, download_direct, get_video_metadata)
 
 router = Router()
 load_dotenv()
@@ -101,6 +103,40 @@ def build_youtube_card(info: dict, vid: str):
     return "\n".join(lines), kb.as_markup()
 
 
+def build_tiktok_card(info: dict, token: str):
+    lines = [f"🎵 <b>{_esc(info['title'][:200])}</b>"]
+    meta = []
+    if info.get("author"):
+        meta.append(f"👤 {_esc(info['author'])}")
+    if info.get("duration"):
+        meta.append(f"⏱ {format_time(info['duration'])}")
+    if info.get("views"):
+        meta.append("👁 " + f"{info['views']:,}".replace(",", " "))
+    if meta:
+        lines.append(" · ".join(meta))
+    lines.append("")
+    if info.get("size"):
+        lines.append(f"▫️ <code>Video</code> — {_size(info['size'])}")
+    if info.get("hdplay"):
+        lines.append(f"▫️ <code>HD</code> — {_size(info['hd_size'])}")
+    lines.append("▫️ <code>MP3</code> — original musiqa")
+    lines.append("")
+    lines.append("👇 <b>Formatni tanlang</b>")
+
+    kb = InlineKeyboardBuilder()
+    row = [InlineKeyboardButton(text="⚡ Video", callback_data=f"tt:sd:{token}")]
+    if info.get("hdplay"):
+        row.append(InlineKeyboardButton(text="💎 HD", callback_data=f"tt:hd:{token}"))
+    kb.row(*row)
+    kb.row(
+        InlineKeyboardButton(text="🎧 MP3", callback_data=f"tt:audio:{token}"),
+        InlineKeyboardButton(text="🖼 Muqova", callback_data=f"tt:cover:{token}"),
+    )
+    if info.get("author_url"):
+        kb.row(InlineKeyboardButton(text="👤 Profilga o'tish", url=info["author_url"]))
+    return "\n".join(lines), kb.as_markup()
+
+
 @router.message(F.text.startswith(tuple(Links.STANDART.value)))
 async def handle_standart_download(message: types.Message):
     url = message.text.strip()
@@ -126,7 +162,7 @@ async def handle_standart_download(message: types.Message):
     # YouTube video: rich info card with real sizes per quality
     is_yt = any(domain in url.lower() for domain in ["youtube.com", "youtu.be"])
     vid = extract_youtube_id(url) if is_yt else None
-    if vid and "/shorts/" not in url.lower():
+    if vid:
         wait = await message.answer("🔎 Video ma'lumotlari olinmoqda...")
         try:
             info = await fetch_youtube_info(url)
@@ -146,7 +182,31 @@ async def handle_standart_download(message: types.Message):
             await message.answer(text, reply_markup=markup)
         return
 
-    # For Shorts, Reels, TikTok - direct instant download
+    # TikTok: info card (video / HD / MP3 / cover)
+    if "tiktok.com" in url.lower():
+        wait = await message.answer("🔎 Video ma'lumotlari olinmoqda...")
+        try:
+            info = await fetch_tiktok_info(url)
+            if info.get("is_images") or not info.get("play"):
+                raise Exception("TikTok post has no video")
+        except Exception as e:
+            logging.exception(f"TikTok info failed: {e}")
+            await wait.delete()
+            await message.reply(VideoStatusMessages.VideoError.value)
+            return
+        await wait.delete()
+        token = await put_url(url)
+        text, markup = build_tiktok_card(info, token)
+        try:
+            if info.get("cover"):
+                await message.answer_photo(info["cover"], caption=text, reply_markup=markup)
+            else:
+                await message.answer(text, reply_markup=markup)
+        except exceptions.TelegramBadRequest:
+            await message.answer(text, reply_markup=markup)
+        return
+
+    # Reels, X, Facebook - direct instant download
     msg = await message.answer(format_message(ProgressState.PREPARING))
     try:
         info = await download_video(msg, url, quality="720")
@@ -378,6 +438,88 @@ async def handle_quality_choice(callback: types.CallbackQuery, state: FSMContext
         await message.reply(VideoStatusMessages.VideoError.value)
     else:
         await msg.delete()
+
+
+@router.callback_query(F.data.startswith("tt:"))
+async def handle_tiktok_choice(callback: types.CallbackQuery):
+    _, choice, token = callback.data.split(":", 2)
+    url = await get_url(token)
+    if not url:
+        await callback.answer("Havola eskirgan, uni qaytadan yuboring.", show_alert=True)
+        return
+    await callback.answer()
+    chat_id = callback.message.chat.id
+    caption = VideoStatusMessages.Caption.value.format(url=url)
+    cache_key = f"{url}#tt:{choice}"
+
+    if choice == "cover":
+        try:
+            info = await fetch_tiktok_info(url)
+            await callback.bot.send_photo(chat_id=chat_id, photo=info["cover"], caption=caption)
+        except Exception as e:
+            logging.exception(f"TikTok cover failed: {e}")
+            await callback.message.answer(VideoStatusMessages.VideoError.value)
+        return
+
+    msg = await callback.message.answer(format_message(ProgressState.PREPARING))
+    path = None
+    try:
+        cached = await get_cached_media(cache_key)
+        if cached and cached.get("file_id"):
+            if cached.get("media_type") == "audio":
+                await callback.bot.send_audio(chat_id=chat_id, audio=cached["file_id"], caption=caption,
+                                              title=cached.get("title"), performer=cached.get("performer"),
+                                              duration=cached.get("duration", 0))
+            else:
+                await callback.bot.send_video(chat_id=chat_id, video=cached["file_id"], caption=caption,
+                                              width=cached.get("width", 0), height=cached.get("height", 0),
+                                              duration=cached.get("duration", 0))
+            return
+
+        info = await fetch_tiktok_info(url)  # fresh links: TikTok CDN URLs expire quickly
+        if choice == "audio":
+            path = await download_direct(msg, info["music"], ".mp3")
+            sent = await callback.bot.send_audio(
+                chat_id=chat_id,
+                audio=types.FSInputFile(path, chunk_size=4 * 1024 * 1024),
+                caption=caption,
+                title=info["title"][:60],
+                performer=info.get("author") or "TikTok",
+                duration=info.get("duration", 0),
+            )
+            if sent and sent.audio:
+                await cache_media(key=cache_key, file_id=sent.audio.file_id, media_type="audio",
+                                  duration=info.get("duration", 0), title=info["title"][:60],
+                                  performer=info.get("author") or "TikTok", ext="mp3")
+        else:
+            link = info["hdplay"] if choice == "hd" and info.get("hdplay") else info["play"]
+            path = await download_direct(msg, link, ".mp4")
+            meta = await asyncio.get_running_loop().run_in_executor(None, get_video_metadata, path)
+            sent = await callback.bot.send_video(
+                chat_id=chat_id,
+                video=types.FSInputFile(path, chunk_size=4 * 1024 * 1024),
+                caption=caption,
+                width=meta["width"], height=meta["height"],
+                duration=meta["duration"] or info.get("duration", 0),
+                supports_streaming=True,
+            )
+            if sent and sent.video:
+                await cache_media(key=cache_key, file_id=sent.video.file_id, media_type="video",
+                                  width=meta["width"], height=meta["height"],
+                                  duration=meta["duration"] or info.get("duration", 0), ext="mp4")
+    except Exception as e:
+        logging.exception(f"TikTok download failed: {e}")
+        await callback.message.answer(VideoStatusMessages.VideoError.value)
+    finally:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
 
 
 @router.message(Command("cancel"), StateFilter(TrimStates.waiting_range))
