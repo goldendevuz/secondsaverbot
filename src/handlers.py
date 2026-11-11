@@ -23,6 +23,8 @@ router = Router()
 load_dotenv()
 
 MAX_CLIP_SECONDS = 15 * 60
+# TikTok is blocked from the server (SNI DPI; WARP rejected). Set TIKTOK_ENABLED=true once a working PROXY_URL exists.
+TIKTOK_ENABLED = os.getenv("TIKTOK_ENABLED", "false").lower() in ("1", "true", "yes")
 
 
 class TrimStates(StatesGroup):
@@ -191,6 +193,9 @@ async def handle_standart_download(message: types.Message):
 
     # TikTok: info card (video / MP3 / cover)
     if "tiktok.com" in url.lower():
+        if not TIKTOK_ENABLED:
+            await message.reply("⏸ TikTok yuklash vaqtincha o'chirilgan. Hozircha YouTube, Instagram, X va Facebook ishlaydi.")
+            return
         wait = await message.answer("🔎 Video ma'lumotlari olinmoqda...")
         video = cover = None
         try:
@@ -640,6 +645,6 @@ async def clean(message: types.Message):
 async def start(message: types.Message):
     await message.answer(
         f"Assalomu alaykum, @{message.from_user.username or message.from_user.first_name}!\n\n"
-        "Yuklab olmoqchi bo'lgan video havolasini yuboring (YouTube, TikTok, Instagram, Twitter, Facebook).\n\n"
+        "Yuklab olmoqchi bo'lgan video havolasini yuboring (YouTube, Instagram, Twitter, Facebook).\n\n"
         "⚡ Tezkor va qulay yuklab olish xizmati!",
     )
