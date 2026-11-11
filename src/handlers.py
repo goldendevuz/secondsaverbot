@@ -11,7 +11,8 @@ from aiogram.filters import Command, CommandStart
 from dotenv import load_dotenv
 
 from enums import Links, ProgressState, VideoStatusMessages
-from utils import VIDEOS_DIR, download_video, download_audio, format_bytes, format_message
+from utils import (VIDEOS_DIR, download_video, download_audio, format_bytes, format_message,
+                   format_time, extract_youtube_id, fetch_youtube_info)
 
 router = Router()
 load_dotenv()
@@ -19,6 +20,57 @@ load_dotenv()
 # Local Bot API supports up to 2000 MB (2 GB)
 MAX_TELEGRAM_SIZE = 2000 * 1024 * 1024
 FILES_URL = os.getenv("FILES_URL")
+
+
+def _esc(t: str) -> str:
+    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _size(n: int) -> str:
+    return format_bytes(n).replace(".0 ", " ")
+
+
+def build_youtube_card(info: dict, vid: str):
+    """Info card: title, channel, duration, real size per quality + action buttons."""
+    lines = [f"🎬 <b>{_esc(info['title'])}</b>"]
+    meta = []
+    if info.get("channel"):
+        meta.append(f"👤 {_esc(info['channel'])}")
+    if info.get("duration"):
+        meta.append(f"⏱ {format_time(info['duration'])}")
+    if info.get("views"):
+        meta.append("👁 " + f"{info['views']:,}".replace(",", " "))
+    if meta:
+        lines.append(" · ".join(meta))
+    lines.append("")
+
+    sizes = info["sizes"]
+    for height, size in sizes.items():
+        lines.append(f"▫️ <code>{height}p</code> — {_size(size)}")
+    if info.get("audio_size"):
+        lines.append(f"▫️ <code>MP3</code> — {_size(info['audio_size'])}")
+    lines.append("")
+    lines.append("👇 <b>Sifatni tanlang</b>")
+
+    icons = {144: "🪶", 240: "🪶", 360: "⚡", 480: "📱", 720: "🔥", 1080: "💎", 1440: "👑", 2160: "👑"}
+    heights = list(sizes) or [360, 720]
+    kb = InlineKeyboardBuilder()
+    buttons = [
+        InlineKeyboardButton(
+            text=f"{icons.get(h, '🎞')} {h}p · {_size(sizes[h])}" if h in sizes else f"{icons.get(h, '🎞')} {h}p",
+            callback_data=f"dl:{h}:{vid}",
+        )
+        for h in heights
+    ]
+    for i in range(0, len(buttons), 2):
+        kb.row(*buttons[i:i + 2])
+    kb.row(
+        InlineKeyboardButton(text="🎧 MP3", callback_data=f"dl:audio:{vid}"),
+        InlineKeyboardButton(text="🖼 Muqova", callback_data=f"dl:cover:{vid}"),
+    )
+    if info.get("channel_url"):
+        kb.row(InlineKeyboardButton(text="📺 Kanalga o'tish", url=info["channel_url"]))
+    return "\n".join(lines), kb.as_markup()
 
 
 @router.message(F.text.startswith(tuple(Links.STANDART.value)))
@@ -43,19 +95,27 @@ async def handle_standart_download(message: types.Message):
         await message.delete()
         return
 
-    # Check if YouTube link (show 360p, 720p, Audio)
+    # YouTube video: rich info card with real sizes per quality
     is_yt = any(domain in url.lower() for domain in ["youtube.com", "youtu.be"])
-    if is_yt and not ("/shorts/" in url.lower()):
-        builder = InlineKeyboardBuilder()
-        builder.row(
-            InlineKeyboardButton(text="⚡ 360p", callback_data=f"dl:360:{url}"),
-            InlineKeyboardButton(text="💎 720p", callback_data=f"dl:720:{url}"),
-            InlineKeyboardButton(text="🎵 MP3 Audio", callback_data=f"dl:audio:{url}")
-        )
-        await message.answer(
-            f"🎬 <b>Formatni tanlang:</b>\n<code>{url}</code>",
-            reply_markup=builder.as_markup()
-        )
+    vid = extract_youtube_id(url) if is_yt else None
+    if vid and "/shorts/" not in url.lower():
+        wait = await message.answer("🔎 Video ma'lumotlari olinmoqda...")
+        try:
+            info = await fetch_youtube_info(url)
+        except Exception as e:
+            logging.exception(f"Info fetch failed: {e}")
+            await wait.delete()
+            await message.reply(VideoStatusMessages.VideoError.value)
+            return
+        await wait.delete()
+        text, markup = build_youtube_card(info, vid)
+        try:
+            if info.get("thumbnail"):
+                await message.answer_photo(info["thumbnail"], caption=text, reply_markup=markup)
+            else:
+                await message.answer(text, reply_markup=markup)
+        except exceptions.TelegramBadRequest:
+            await message.answer(text, reply_markup=markup)
         return
 
     # For Shorts, Reels, TikTok - direct instant download
@@ -122,10 +182,28 @@ async def handle_standart_download(message: types.Message):
 
 @router.callback_query(F.data.startswith("dl:"))
 async def handle_quality_choice(callback: types.CallbackQuery):
-    _, choice, url = callback.data.split(":", 2)
+    _, choice, vid = callback.data.split(":", 2)
+    url = f"https://www.youtube.com/watch?v={vid}"
     message = callback.message
     await callback.answer()
-    msg = await message.edit_text(format_message(ProgressState.PREPARING))
+
+    if choice == "cover":
+        try:
+            await callback.bot.send_photo(
+                chat_id=message.chat.id,
+                photo=f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg",
+                caption=VideoStatusMessages.Caption.value.format(url=url),
+            )
+        except exceptions.TelegramBadRequest:
+            await callback.bot.send_photo(
+                chat_id=message.chat.id,
+                photo=f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+                caption=VideoStatusMessages.Caption.value.format(url=url),
+            )
+        return
+
+    # Progress goes into a separate message so the card stays usable for other qualities
+    msg = await message.answer(format_message(ProgressState.PREPARING))
 
     cache_key = f"{url}#{choice}"
 

@@ -213,34 +213,15 @@ async def download_video(msg: types.Message, url: str, quality: str = '720'):
         else:
             proxy_url = os.getenv("PROXY_URL") or os.getenv("WARP_PROXY", "socks5://warp:9091")
 
-        # Format selector based on quality
-        # Ensures 360p merges separate video+audio when pre-muxed 18 is absent!
-        if quality == "360":
-            format_selector = (
-                "18/"
-                "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/"
-                "bestvideo[height<=360]+bestaudio/"
-                "b[height<=360][ext=mp4]/"
-                "best[height<=360]/"
-                "best"
-            )
-        elif quality == "480":
-            format_selector = (
-                "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/"
-                "bestvideo[height<=480]+bestaudio/"
-                "best[height<=480]/"
-                "18/"
-                "best"
-            )
-        else:
-            format_selector = (
-                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/"
-                "best[height<=720][ext=mp4]/"
-                "bestvideo[height<=720]+bestaudio/"
-                "best[height<=720]/"
-                "18/"
-                "best"
-            )
+        # Format selector for any target height (144/360/720/1080/...): merges video+audio
+        h = int(quality) if str(quality).isdigit() else 720
+        format_selector = (
+            f"bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/"
+            f"bestvideo[height<={h}]+bestaudio/"
+            f"best[height<={h}][ext=mp4]/"
+            f"best[height<={h}]/"
+            "18/best"
+        )
 
         options = {
             "format": format_selector,
@@ -458,3 +439,75 @@ async def download_audio(msg: types.Message, url: str):
     info = await loop.run_in_executor(None, download)
     await msg.edit_text(format_message(ProgressState.FINALIZING))
     return info
+
+
+def extract_youtube_id(url: str) -> str | None:
+    import re
+    m = re.search(
+        r"(?:youtu\.be/|youtube\.com/(?:watch\?(?:.*&)?v=|embed/|live/|shorts/))([A-Za-z0-9_-]{11})",
+        url,
+    )
+    return m.group(1) if m else None
+
+
+async def fetch_youtube_info(url: str) -> dict:
+    """Title, channel, duration and per-resolution size estimates, without downloading."""
+    import tempfile
+    loop = asyncio.get_running_loop()
+
+    def run():
+        opts = {
+            "proxy": os.getenv("PROXY_URL") or os.getenv("WARP_PROXY", "socks5://warp:9091"),
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "js_runtimes": {"quickjs": {"path": "/usr/bin/qjs"}} if shutil.which("qjs") else {},
+        }
+        tmp = None
+        if COOKIES_FILE.exists() and COOKIES_FILE.is_file() and COOKIES_FILE.stat().st_size > 10:
+            text = COOKIES_FILE.read_text(encoding="utf-8").strip()
+            if "# Netscape" in text or "\t" in text:
+                tmp = tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w", encoding="utf-8")
+                tmp.write(text + "\n")
+                tmp.close()
+                opts["cookiefile"] = tmp.name
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        finally:
+            if tmp:
+                Path(tmp.name).unlink(missing_ok=True)
+
+        fmts = info.get("formats") or []
+        size_of = lambda f: f.get("filesize") or f.get("filesize_approx") or 0
+        best_audio = max(
+            (size_of(f) for f in fmts if f.get("vcodec") == "none" and f.get("acodec") not in (None, "none")),
+            default=0,
+        )
+        ladder = [144, 240, 360, 480, 720, 1080, 1440, 2160]
+        sizes: dict[int, int] = {}
+        for f in fmts:
+            h = f.get("height")
+            if not h or f.get("vcodec") in (None, "none"):
+                continue
+            size = size_of(f)
+            if not size:
+                continue
+            if f.get("acodec") in (None, "none"):
+                size += best_audio
+            std = min((x for x in ladder if x >= h - 10), default=h)
+            sizes[std] = max(sizes.get(std, 0), size)
+
+        return {
+            "id": info.get("id"),
+            "title": info.get("title") or "Video",
+            "channel": info.get("channel") or info.get("uploader") or "",
+            "channel_url": info.get("channel_url") or info.get("uploader_url"),
+            "duration": int(info.get("duration") or 0),
+            "views": info.get("view_count"),
+            "thumbnail": info.get("thumbnail"),
+            "sizes": dict(sorted(sizes.items())),
+            "audio_size": best_audio,
+        }
+
+    return await loop.run_in_executor(None, run)
