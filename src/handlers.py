@@ -17,7 +17,7 @@ from enums import Links, ProgressState, VideoStatusMessages
 from utils import (VIDEOS_DIR, download_video, download_audio, format_bytes, format_message,
                    format_time, extract_youtube_id, fetch_youtube_info,
                    fetch_tiktok_info, download_tiktok, extract_frame, extract_mp3,
-                   get_video_metadata)
+                   get_video_metadata, has_audio)
 
 router = Router()
 load_dotenv()
@@ -104,7 +104,7 @@ def build_youtube_card(info: dict, vid: str):
     return "\n".join(lines), kb.as_markup()
 
 
-def build_tiktok_card(info: dict, token: str, size: int = 0):
+def build_tiktok_card(info: dict, token: str, size: int = 0, audio: bool = True):
     lines = [f"🎵 <b>{_esc(info['title'][:200])}</b>"]
     meta = []
     if info.get("author"):
@@ -118,16 +118,17 @@ def build_tiktok_card(info: dict, token: str, size: int = 0):
     lines.append("")
     size = size or info.get("size") or 0
     lines.append(f"▫️ <code>Video</code> — {_size(size)}" if size else "▫️ <code>Video</code>")
-    lines.append("▫️ <code>MP3</code> — videodagi ovoz")
+    if audio:
+        lines.append("▫️ <code>MP3</code> — videodagi ovoz")
     lines.append("")
     lines.append("👇 <b>Formatni tanlang</b>")
 
     kb = InlineKeyboardBuilder()
     kb.row(InlineKeyboardButton(text="⚡ Video", callback_data=f"tt:sd:{token}"))
-    kb.row(
-        InlineKeyboardButton(text="🎧 MP3", callback_data=f"tt:audio:{token}"),
-        InlineKeyboardButton(text="🖼 Muqova", callback_data=f"tt:cover:{token}"),
-    )
+    row = [InlineKeyboardButton(text="🖼 Muqova", callback_data=f"tt:cover:{token}")]
+    if audio:
+        row.insert(0, InlineKeyboardButton(text="🎧 MP3", callback_data=f"tt:audio:{token}"))
+    kb.row(*row)
     if info.get("author_url"):
         kb.row(InlineKeyboardButton(text="👤 Profilga o'tish", url=info["author_url"]))
     return "\n".join(lines), kb.as_markup()
@@ -200,6 +201,7 @@ async def handle_standart_download(message: types.Message):
             video = await download_tiktok(info)
             cover = await extract_frame(video)
             size = video.stat().st_size
+            audio = has_audio(video)
         except Exception as e:
             logging.exception(f"TikTok info failed: {e}")
             _rm(video, cover)
@@ -208,7 +210,7 @@ async def handle_standart_download(message: types.Message):
             return
         await wait.delete()
         token = await put_url(url)
-        text, markup = build_tiktok_card(info, token, size)
+        text, markup = build_tiktok_card(info, token, size, audio)
         try:
             if cover:
                 await message.answer_photo(types.FSInputFile(cover), caption=text, reply_markup=markup)
@@ -492,7 +494,8 @@ async def handle_tiktok_choice(callback: types.CallbackQuery):
         elif choice == "audio":
             extra = await extract_mp3(video)
             if not extra:
-                raise Exception("mp3 extraction failed")
+                await callback.message.answer("🔇 Bu videoda ovoz yo'q.")
+                return
             sent = await callback.bot.send_audio(
                 chat_id=chat_id,
                 audio=types.FSInputFile(extra, chunk_size=4 * 1024 * 1024),

@@ -249,6 +249,18 @@ def _ffmpeg_sync(args: list[str], out: Path) -> Path | None:
     return out if out.exists() and out.stat().st_size > 0 else None
 
 
+def has_audio(path: Path) -> bool:
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_type",
+             "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=20,
+        )
+        return "audio" in r.stdout
+    except Exception:
+        return True  # unknown: keep the button
+
+
 async def extract_frame(video: Path) -> Path | None:
     """First frame as a JPEG (cover image)."""
     out = video.with_suffix(".cover.jpg")
