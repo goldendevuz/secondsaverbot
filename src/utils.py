@@ -103,33 +103,33 @@ def get_percentage(data: dict) -> float:
     return downloaded / total * 100 if total else 0
 
 
+def progress_bar(percent: float, width: int = 12) -> str:
+    filled = max(0, min(width, round(percent / 100 * width)))
+    return "▰" * filled + "▱" * (width - filled)
+
+
 def format_message(
     state: ProgressState,
     progress: float = 0,
+    speed: float | None = None,
+    eta: int | None = None,
 ) -> str:
-    steps = [
-        ProgressState.PREPARING,
-        ProgressState.VIDEO_DOWNLOADING,
-        ProgressState.AUDIO_DOWNLOADING,
-        ProgressState.FINALIZING,
-    ]
+    """One live status card: headline, progress bar, speed and time left."""
+    if state == ProgressState.PREPARING:
+        return "🔎 <b>Tayyorlanmoqda…</b>"
 
-    lines = []
+    if state == ProgressState.FINALIZING:
+        return "⚙️ <b>Yakunlanmoqda…</b>\n" + progress_bar(100) + " <b>100%</b>"
 
-    for step in steps:
-        if steps.index(step) < steps.index(state):
-            lines.append(f"✅ {step.value}")
-        elif step == state:
-            if step in (
-                ProgressState.VIDEO_DOWNLOADING,
-                ProgressState.AUDIO_DOWNLOADING,
-            ):
-                lines.append(f"🔄 {step.value} ({progress:.1f}%)")
-            else:
-                lines.append(f"🔄 {step.value}")
-        else:
-            lines.append(f"⏳ {step.value}")
-
+    title = "🎬 Video yuklanmoqda" if state == ProgressState.VIDEO_DOWNLOADING else "🎧 Ovoz yuklanmoqda"
+    lines = [f"<b>{title}</b>", f"{progress_bar(progress)} <b>{progress:.0f}%</b>"]
+    extra = []
+    if speed:
+        extra.append(f"⚡ {format_bytes(speed)}/s")
+    if eta is not None:
+        extra.append(f"⏳ {format_time(int(eta))}")
+    if extra:
+        lines.append(" · ".join(extra))
     return "\n".join(lines)
 
 
@@ -168,15 +168,16 @@ async def download_video(msg: types.Message, url: str, quality: str = '720', cli
     loop = asyncio.get_running_loop()
     last_update = [0.0]
     progress = [0.0]
+    stats = [None, None]  # speed, eta
     current_state = [ProgressState.VIDEO_DOWNLOADING]
 
     async def update_progress() -> None:
-        await msg.edit_text(
-            format_message(
-                current_state[0],
-                progress[0],
+        try:
+            await msg.edit_text(
+                format_message(current_state[0], progress[0], stats[0], stats[1])
             )
-        )
+        except exceptions.TelegramBadRequest:
+            pass  # "message is not modified"
 
     def progress_hook(data):
         if data["status"] != "downloading":
@@ -190,9 +191,10 @@ async def download_video(msg: types.Message, url: str, quality: str = '720', cli
             current_state[0] = ProgressState.VIDEO_DOWNLOADING
 
         progress[0] = get_percentage(data)
+        stats[0], stats[1] = data.get("speed"), data.get("eta")
 
         now = loop.time()
-        if now - last_update[0] < 1:
+        if now - last_update[0] < 1.5:
             return
 
         last_update[0] = now
@@ -353,16 +355,23 @@ async def download_audio(msg: types.Message, url: str):
     loop = asyncio.get_running_loop()
     last_update = [0.0]
     progress = [0.0]
+    stats = [None, None]
 
     async def update_progress() -> None:
-        await msg.edit_text(format_message(ProgressState.AUDIO_DOWNLOADING, progress[0]))
+        try:
+            await msg.edit_text(
+                format_message(ProgressState.AUDIO_DOWNLOADING, progress[0], stats[0], stats[1])
+            )
+        except exceptions.TelegramBadRequest:
+            pass
 
     def progress_hook(data):
         if data["status"] != "downloading":
             return
         progress[0] = get_percentage(data)
+        stats[0], stats[1] = data.get("speed"), data.get("eta")
         now = loop.time()
-        if now - last_update[0] < 1:
+        if now - last_update[0] < 1.5:
             return
         last_update[0] = now
         asyncio.run_coroutine_threadsafe(update_progress(), loop)
