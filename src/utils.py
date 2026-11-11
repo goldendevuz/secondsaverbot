@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -151,6 +152,7 @@ async def fetch_tiktok_info(url: str) -> dict:
     author = d.get("author") or {}
     hd_size = d.get("hd_size") or 0
     return {
+        "id": str(d.get("id") or ""),
         "title": (d.get("title") or "TikTok").strip(),
         "author": author.get("nickname") or author.get("unique_id") or "",
         "author_url": f"https://www.tiktok.com/@{author['unique_id']}" if author.get("unique_id") else None,
@@ -166,48 +168,101 @@ async def fetch_tiktok_info(url: str) -> dict:
     }
 
 
-async def download_direct(msg: types.Message, direct_url: str, suffix: str) -> Path:
-    """Stream a direct media link into VIDEOS_DIR, updating the progress card."""
+async def download_direct(
+    msg: types.Message | None,
+    direct_url: str,
+    suffix: str,
+    use_proxy: bool = True,
+    timeout: int = 300,
+) -> Path:
+    """Stream a direct media link into VIDEOS_DIR, updating the progress card if msg is given."""
     dest = VIDEOS_DIR / f"{uuid.uuid4()}{suffix}"
     loop = asyncio.get_running_loop()
     last = 0.0
     done = 0
     started = loop.time()
-    # TikTok CDN is blocked from Uzbekistan: go through the same WARP proxy yt-dlp uses
-    proxy_url = os.getenv("PROXY_URL") or os.getenv("WARP_PROXY", "socks5://warp:9091")
+
     connector = None
-    if proxy_url:
-        from aiohttp_socks import ProxyConnector
-        connector = ProxyConnector.from_url(proxy_url, rdns=True)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        async with session.get(
-            direct_url,
-            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"},
-            timeout=aiohttp.ClientTimeout(total=300),
-        ) as resp:
-            resp.raise_for_status()
-            total = resp.content_length or 0
-            with open(dest, "wb") as f:
-                async for chunk in resp.content.iter_chunked(256 * 1024):
-                    f.write(chunk)
-                    done += len(chunk)
-                    now = loop.time()
-                    if total and now - last >= 1.5:
-                        last = now
-                        speed = done / max(now - started, 0.1)
-                        eta = (total - done) / speed if speed else None
-                        try:
-                            await msg.edit_text(format_message(
-                                ProgressState.AUDIO_DOWNLOADING if suffix == ".mp3" else ProgressState.VIDEO_DOWNLOADING,
-                                done / total * 100, speed, eta,
-                            ))
-                        except exceptions.TelegramBadRequest:
-                            pass
+    if use_proxy:
+        proxy_url = os.getenv("PROXY_URL") or os.getenv("WARP_PROXY", "socks5://warp:9091")
+        if proxy_url:
+            from aiohttp_socks import ProxyConnector
+            connector = ProxyConnector.from_url(proxy_url, rdns=True)
+
     try:
-        await msg.edit_text(format_message(ProgressState.FINALIZING))
-    except exceptions.TelegramBadRequest:
-        pass
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.get(
+                direct_url,
+                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"},
+                timeout=aiohttp.ClientTimeout(total=timeout, sock_connect=15),
+            ) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"HTTP {resp.status}")
+                total = resp.content_length or 0
+                with open(dest, "wb") as f:
+                    async for chunk in resp.content.iter_chunked(256 * 1024):
+                        f.write(chunk)
+                        done += len(chunk)
+                        now = loop.time()
+                        if msg and total and now - last >= 1.5:
+                            last = now
+                            speed = done / max(now - started, 0.1)
+                            eta = (total - done) / speed if speed else None
+                            try:
+                                await msg.edit_text(format_message(
+                                    ProgressState.VIDEO_DOWNLOADING, done / total * 100, speed, eta,
+                                ))
+                            except exceptions.TelegramBadRequest:
+                                pass
+        if done < 10_000:
+            raise RuntimeError("empty media")
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise
+
+    if msg:
+        try:
+            await msg.edit_text(format_message(ProgressState.FINALIZING))
+        except exceptions.TelegramBadRequest:
+            pass
     return dest
+
+
+async def download_tiktok(info: dict, msg: types.Message | None = None) -> Path:
+    """TikTok is blocked in Uzbekistan. tikcdn.io serves the file from its own host (no proxy needed);
+    the WARP-proxied TikTok CDN link is only the fallback."""
+    if info.get("id"):
+        try:
+            return await download_direct(msg, f"https://tikcdn.io/ssstik/{info['id']}", ".mp4",
+                                         use_proxy=False, timeout=90)
+        except Exception as e:
+            logging.warning(f"tikcdn failed ({e}); falling back to proxied CDN")
+    return await download_direct(msg, info["play"], ".mp4", use_proxy=True)
+
+
+def _ffmpeg_sync(args: list[str], out: Path) -> Path | None:
+    try:
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *args, str(out)],
+                       capture_output=True, timeout=120)
+    except Exception as e:
+        logging.warning(f"ffmpeg failed: {e}")
+    return out if out.exists() and out.stat().st_size > 0 else None
+
+
+async def extract_frame(video: Path) -> Path | None:
+    """First frame as a JPEG (cover image)."""
+    out = video.with_suffix(".cover.jpg")
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _ffmpeg_sync,
+        ["-ss", "0.3", "-i", str(video), "-frames:v", "1", "-vf", "scale='min(720,iw)':-2", "-q:v", "3"], out,
+    )
+
+
+async def extract_mp3(video: Path) -> Path | None:
+    out = video.with_suffix(".mp3")
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _ffmpeg_sync, ["-i", str(video), "-vn", "-c:a", "libmp3lame", "-q:a", "2"], out,
+    )
 
 
 async def download_video(msg: types.Message, url: str, quality: str = '720', clip: tuple[int, int] | None = None):
