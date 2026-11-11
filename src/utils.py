@@ -229,15 +229,9 @@ async def download_direct(
 
 
 async def download_tiktok(info: dict, msg: types.Message | None = None) -> Path:
-    """TikTok is blocked in Uzbekistan. tikcdn.io serves the file from its own host (no proxy needed);
-    the WARP-proxied TikTok CDN link is only the fallback."""
-    if info.get("id"):
-        try:
-            return await download_direct(msg, f"https://tikcdn.io/ssstik/{info['id']}", ".mp4",
-                                         use_proxy=False, timeout=90)
-        except Exception as e:
-            logging.warning(f"tikcdn failed ({e}); falling back to proxied CDN")
-    return await download_direct(msg, info["play"], ".mp4", use_proxy=True)
+    """TikTok's CDN is blocked from Uzbekistan, so the download goes through the WARP proxy.
+    NOTE: do not use tikcdn.io/ssstik - it now serves an 'app is offline' ad video for every id."""
+    return await download_direct(msg, info["play"], ".mp4", use_proxy=True, timeout=120)
 
 
 def _ffmpeg_sync(args: list[str], out: Path) -> Path | None:
